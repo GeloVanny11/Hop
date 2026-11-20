@@ -3,6 +3,10 @@ package com.hop.share
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.bluetooth.BluetoothManager
+import android.content.Context
+import android.location.LocationManager
+import android.net.wifi.WifiManager
 import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -17,8 +21,11 @@ import android.os.SystemClock
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.provider.Settings
+import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
@@ -53,6 +60,12 @@ class MainActivity : Activity() {
     private lateinit var speedTv: TextView
     private lateinit var bar: ProgressBar
     private val ui = Handler(Looper.getMainLooper())
+    private lateinit var main: LinearLayout
+    private lateinit var setup: LinearLayout
+    private lateinit var contBtn: Button
+    private var started = false
+    private var askedPerm = false
+    private val rows = ArrayList<Row>()
 
     private val peers = LinkedHashMap<String, Peer>()
     private var files: List<Uri> = emptyList()
@@ -72,7 +85,6 @@ class MainActivity : Activity() {
             ?.takeIf { it.isNotBlank() } ?: Build.MODEL
         client = Nearby.getConnectionsClient(this)
         buildUi()
-        if (missing().isEmpty()) startNearby() else requestPermissions(needed().toTypedArray(), 1)
     }
 
     override fun onDestroy() {
@@ -101,8 +113,7 @@ class MainActivity : Activity() {
         }.toTypedArray()
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
-        if (missing().isEmpty()) startNearby()
-        else status.text = "Allow the nearby devices permission, then reopen Hop."
+        refreshSetup()
     }
 
     // ---------- UI ----------
@@ -135,7 +146,97 @@ class MainActivity : Activity() {
         }
         root.addView(status); root.addView(picked); root.addView(bar); root.addView(speedTv)
         root.addView(choose, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52)))
-        setContentView(root)
+        main = root
+        main.visibility = View.GONE
+        setContentView(FrameLayout(this).apply { addView(main); addView(buildSetup()) })
+    }
+
+    // ---------- setup screen ----------
+    private class Row(val label: String, val ok: () -> Boolean, val btn: String, val fix: () -> Unit) {
+        lateinit var tv: TextView
+        lateinit var b: Button
+    }
+
+    private fun isWifiOn() =
+        (applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager)?.isWifiEnabled == true
+    private fun isBtOn() = getSystemService(BluetoothManager::class.java)?.adapter?.isEnabled == true
+    private fun isLocOn() = getSystemService(LocationManager::class.java)?.isLocationEnabled == true
+
+    private fun askPermissions() {
+        if (!askedPerm) {
+            askedPerm = true
+            requestPermissions(needed().toTypedArray(), 1)
+        } else {
+            // Already asked once: Android may not show the prompt again, so open the app's settings.
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+        }
+    }
+
+    private fun buildSetup(): LinearLayout {
+        val ink = Color.parseColor("#10302B")
+        val muted = Color.parseColor("#5F7A74")
+        setup = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#E9F1EE"))
+            setPadding(dp(24), dp(48), dp(24), dp(24))
+        }
+        setup.addView(TextView(this).apply {
+            text = "Get Hop ready"; textSize = 26f; typeface = Typeface.DEFAULT_BOLD; setTextColor(ink)
+        })
+        setup.addView(TextView(this).apply {
+            text = "Turn these on so Hop can find nearby phones and send files fast. When you come back from Settings, this list updates by itself."
+            setTextColor(muted); setPadding(0, dp(6), 0, dp(20))
+        })
+        rows += Row("Wi\u2011Fi is on", { isWifiOn() }, "Turn on") { startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }
+        rows += Row("Bluetooth is on", { isBtOn() }, "Turn on") { startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) }
+        rows += Row("Location is on", { isLocOn() }, "Turn on") { startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) }
+        rows += Row("Permissions allowed", { missing().isEmpty() }, "Allow") { askPermissions() }
+        for (r in rows) {
+            val line = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(8), 0, dp(8))
+            }
+            r.tv = TextView(this).apply { textSize = 17f; setTextColor(ink) }
+            r.b = Button(this).apply { text = r.btn; isAllCaps = false; setOnClickListener { r.fix() } }
+            line.addView(r.tv, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            line.addView(r.b)
+            setup.addView(line)
+        }
+        setup.addView(TextView(this).apply {
+            text = "If a permission prompt says Nearby devices or Location, choose Allow (Precise if offered)."
+            setTextColor(muted); setPadding(0, dp(12), 0, dp(12))
+        })
+        contBtn = Button(this).apply {
+            text = "Continue"; isAllCaps = false; setTextColor(Color.WHITE)
+            setBackgroundColor(ink)
+            setOnClickListener {
+                setup.visibility = View.GONE
+                main.visibility = View.VISIBLE
+                if (!started) { started = true; startNearby() }
+            }
+        }
+        setup.addView(contBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52)))
+        return setup
+    }
+
+    private fun refreshSetup() {
+        if (!::setup.isInitialized) return
+        var all = true
+        for (r in rows) {
+            val ok = r.ok()
+            all = all && ok
+            r.tv.text = (if (ok) "\u2705  " else "\u2B1C  ") + r.label
+            r.b.visibility = if (ok) View.GONE else View.VISIBLE
+        }
+        contBtn.isEnabled = all
+        contBtn.alpha = if (all) 1f else 0.4f
+        // If something gets switched off later, bring the setup list back.
+        if (!all && started) { setup.visibility = View.VISIBLE; main.visibility = View.GONE }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        refreshSetup()
     }
 
     private fun refresh() {
