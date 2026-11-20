@@ -72,7 +72,7 @@ class MainActivity : Activity() {
             ?.takeIf { it.isNotBlank() } ?: Build.MODEL
         client = Nearby.getConnectionsClient(this)
         buildUi()
-        if (missing().isEmpty()) startNearby() else requestPermissions(missing(), 1)
+        if (missing().isEmpty()) startNearby() else requestPermissions(needed().toTypedArray(), 1)
     }
 
     override fun onDestroy() {
@@ -88,13 +88,17 @@ class MainActivity : Activity() {
             l += Manifest.permission.BLUETOOTH_CONNECT
             l += Manifest.permission.BLUETOOTH_SCAN
         }
-        if (Build.VERSION.SDK_INT <= 32) l += Manifest.permission.ACCESS_FINE_LOCATION
+        l += Manifest.permission.ACCESS_COARSE_LOCATION
+        l += Manifest.permission.ACCESS_FINE_LOCATION
         if (Build.VERSION.SDK_INT >= 33) l += Manifest.permission.NEARBY_WIFI_DEVICES
         return l
     }
 
     private fun missing(): Array<String> =
-        needed().filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }.toTypedArray()
+        needed().filter {
+            it != Manifest.permission.ACCESS_FINE_LOCATION &&
+                checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
+        }.toTypedArray()
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         if (missing().isEmpty()) startNearby()
